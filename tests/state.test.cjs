@@ -4678,6 +4678,49 @@ describe('state validate — S006 delegates to the canonical verification owner'
       'the staleness gate must not suppress the true positive it exists to protect',
     );
   });
+
+  test('a passed latch whose staleness cannot be determined does not fire S006 (indeterminate, not fresh)', (t) => {
+    // findStaleVerificationSummary returns {determined:false} when it cannot
+    // finish the check (fs/scan/clock failure) — a broken symlink standing in
+    // for the SUMMARY file reproduces that deterministically: readdir sees the
+    // filename (so scanPhasePlans still counts it as a summary), but statSync
+    // on it throws ENOENT (the link target does not exist), which is exactly
+    // the failure findStaleVerificationSummary's own try/catch degrades to
+    // `{determined:false}`. S006 must fail CLOSED on "cannot tell" — it must
+    // NOT advise completion just because the staleness check didn't
+    // positively confirm stale.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['---', 'current_phase: "01"', 'status: executing', '---', '', '# Project State', ''].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-demo');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '01-VERIFICATION.md'),
+      ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+    );
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    const brokenTarget = path.join(phaseDir, 'does-not-exist.md');
+    const summaryPath = path.join(phaseDir, '01-01-SUMMARY.md');
+    try {
+      fs.symlinkSync(brokenTarget, summaryPath, 'file');
+    } catch (error) {
+      if (error && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+        t.skip('symlink creation is not available on this platform');
+        return;
+      }
+      throw error;
+    }
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.ok(
+      !findWarning(output, 'S006'),
+      'an indeterminate staleness check must not be treated as fresh — S006 must fail closed, not advise completion',
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -5001,8 +5001,13 @@ function cmdStateValidate(cwd: string, raw: boolean, opts: { strict?: boolean } 
         //     `passed` report that a later SUMMARY has already invalidated is
         //     routed `stale` — not `passed` — by `readVerificationStatus`, so
         //     advising completion from it contradicted every other surface.
-        //     Fail-open exactly as that owner is: `{determined:false}` (an
-        //     fs/scan/clock failure) does not suppress the warning.
+        //     Unlike that owner's own fail-OPEN routing (`{determined:false}`
+        //     treated as not-stale), THIS warning fails CLOSED on the same
+        //     result: it only fires when staleness was positively determined
+        //     fresh (`{determined:true, stale:false}`). An indeterminate check
+        //     is "unknown", not "fresh", and this warning's claim — "phase MAY
+        //     BE COMPLETE" — is a stronger assertion than the routers make, so
+        //     it does not get their fail-open license.
         //   * The comparison is EXACT and lowercase, matching the
         //     `VERIFICATION_ROUTING_TABLE` key lookup in `verification.cts`:
         //     `PASSED` is an unrecognised value there, routed to `unknown`,
@@ -5046,8 +5051,15 @@ function cmdStateValidate(cwd: string, raw: boolean, opts: { strict?: boolean } 
             const vFm = extractFrontmatter(vContent, verificationFilePath) as Record<string, unknown>;
             const vStatus = typeof vFm['status'] === 'string' ? vFm['status'].trim() : '';
             const staleCheck = findStaleVerificationSummary(phaseDirPath);
-            const isStale = staleCheck.determined === true && staleCheck.stale === true;
-            if (vStatus === 'passed' && !isStale) {
+            // Fail CLOSED, unlike the sibling readers (`readVerificationStatus`,
+            // `determinePhaseStatus`) that fail OPEN on `{determined:false}`: this
+            // warning's claim is "verification passed — phase MAY BE COMPLETE",
+            // a stronger assertion than those routers' "not proven stale, so keep
+            // routing as passed". An indeterminate staleness check (fs/scan/clock
+            // failure) is not "positively fresh" — it is "unknown" — so it must
+            // not license this stronger completion advisory.
+            const isFresh = staleCheck.determined === true && staleCheck.stale === false;
+            if (vStatus === 'passed' && isFresh) {
               warnings.push(stateDiagnostic(
                 'S006',
                 SEVERITY.WARNING,
