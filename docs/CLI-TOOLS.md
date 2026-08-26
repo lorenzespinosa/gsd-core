@@ -293,20 +293,48 @@ together:
 | Question | Numerator | Where it appears |
 |---|---|---|
 | How many plans have **run**? | `*-SUMMARY.md` files that pair with a plan | `stats --raw`'s `plan_percent`; `query progress --raw`'s `percent`; `stats table`'s `**Plans:** N/M executed`; `progress table` / `progress bar`'s `N/M plans executed` |
-| How many phases are **verified complete**? | phases whose `*-VERIFICATION.md` frontmatter latch reads `passed` | `stats --raw`'s `percent` and `phases_completed`; `stats table`'s `**Phases:** N/M complete`; the ROADMAP checkbox, `Status` cell and completion date written by `roadmap update-plan-progress` |
+| How many phases are **verified complete**? | phases whose own `*-VERIFICATION.md` latches `passed` and that no later `*-SUMMARY.md` has overtaken | `stats --raw`'s `percent` and `phases_completed`; `stats table`'s `**Phases:** N/M complete`; the ROADMAP checkbox, `Status` cell and completion date written by `roadmap update-plan-progress` |
 
 A SUMMARY on disk means a plan was executed, not that it worked. A plan that was
 deliberately halted (`status: halted` in its SUMMARY frontmatter — see #2830)
-writes a SUMMARY too, so it counts as executed and never as complete. A phase
-whose verification latch is `gaps_found`, `human_needed`, `stale`, `missing` or
-any unrecognised value reports status `Executed`, contributes `0` to the verified
-percentage, and gets no ROADMAP tick or completion date — however many of its
-plans have run.
+writes a SUMMARY too, so it counts as executed and never as complete.
+
+Completion is decided per phase, from that phase's own verification report — the
+one the phase-scoped resolver single-picks (#3357/#3511), so an ad-hoc
+`NN-CORRECTION-VERIFICATION.md` worksheet sitting beside the real report never
+answers for the phase. The `Status` these surfaces render, and what each state
+contributes to `phases_completed` / `percent`:
+
+| Phase state | `Status` | Counted complete? |
+|---|---|---|
+| verification latches `passed`, and no `*-SUMMARY.md` is newer than it | `Complete` | yes |
+| verification latches `passed`, but a later `*-SUMMARY.md` overtook it (#2348) | `Executed` | no |
+| verification latches `human_needed` | `Needs Review` | no |
+| verification latches `gaps_found`, or any value the verifier does not emit | `Executed` | no |
+| every plan has a SUMMARY, but the phase has no verification report | `Executed` | no |
+| some plans have a SUMMARY, some do not | `In Progress` | no |
+| the phase has plans and no SUMMARY at all | `Planned` | no |
+| the phase has no plan files at all | `Not Started` (`stats`) / `Pending` (`query progress`) | no |
+
+Verification is only consulted once every plan in the phase has a SUMMARY — above
+that line the plan counts alone decide the label, so a phase cannot read
+`Complete` while work is still outstanding, whatever its report says.
+
+Only the first row is a completion claim. It is the only state that contributes
+to `phases_completed` / `percent`, and the only one `roadmap update-plan-progress`
+will tick a checkbox, stamp a completion date, and write `N/M plans complete`
+for — and that command adds one further condition of its own, since it is
+writing the claim down rather than reporting it: every plan file on disk must
+have its matching SUMMARY. Otherwise it writes `N/M plans executed`.
+
+One deliberate asymmetry: a phase with **zero** plan files and a passing
+verification is complete to `roadmap update-plan-progress` and every other
+consumer of the `isPhaseComplete` owner (disk-strict, ADR-3180 §7.4 / #3168),
+but reads `Not Started` / `Pending` in the last row above, because these two
+renderers reach verification only through the plan-count ladder.
 
 Every rendered plan-count ratio therefore says **executed**, never *complete*;
-only phase counts say complete. `roadmap update-plan-progress` is the one place
-that writes `N/M plans complete`, and only for a phase whose own latch reads
-`passed`.
+only phase counts say complete.
 
 ### Milestone identity (which milestone, and what it is called)
 
