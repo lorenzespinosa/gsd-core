@@ -285,6 +285,29 @@ was actually computed from. The two can legitimately disagree (e.g.
 so a consumer must branch on `progress_scope`, not `scope`, to know why
 `progress_percent` is `null`.
 
+### Executed is not complete
+
+Two different questions produce two different numbers, and no surface folds them
+together:
+
+| Question | Numerator | Where it appears |
+|---|---|---|
+| How many plans have **run**? | `*-SUMMARY.md` files that pair with a plan | `stats --raw`'s `plan_percent`; `query progress --raw`'s `percent`; `stats table`'s `**Plans:** N/M executed`; `progress table` / `progress bar`'s `N/M plans executed` |
+| How many phases are **verified complete**? | phases whose `*-VERIFICATION.md` frontmatter latch reads `passed` | `stats --raw`'s `percent` and `phases_completed`; `stats table`'s `**Phases:** N/M complete`; the ROADMAP checkbox, `Status` cell and completion date written by `roadmap update-plan-progress` |
+
+A SUMMARY on disk means a plan was executed, not that it worked. A plan that was
+deliberately halted (`status: halted` in its SUMMARY frontmatter — see #2830)
+writes a SUMMARY too, so it counts as executed and never as complete. A phase
+whose verification latch is `gaps_found`, `human_needed`, `stale`, `missing` or
+any unrecognised value reports status `Executed`, contributes `0` to the verified
+percentage, and gets no ROADMAP tick or completion date — however many of its
+plans have run.
+
+Every rendered plan-count ratio therefore says **executed**, never *complete*;
+only phase counts say complete. `roadmap update-plan-progress` is the one place
+that writes `N/M plans complete`, and only for a phase whose own latch reads
+`passed`.
+
 ### Milestone identity (which milestone, and what it is called)
 
 Milestone identity — the version and name behind `STATE.md`'s `milestone:`
