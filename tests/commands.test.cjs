@@ -2750,6 +2750,149 @@ describe('progress/stats renders label execution as executed, not complete', () 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// A stale passing verification is not a complete phase.
+//
+// `determinePhaseStatus` returned `Complete` from the frontmatter latch alone.
+// Every other reader of that latch consults the staleness owner first: a
+// `*-VERIFICATION.md` that a later `*-SUMMARY.md` has overtaken is routed
+// `stale`, not `passed`, by `readVerificationStatus` (#2348) — which is what
+// `isPhaseComplete` wraps, and what `roadmap update-plan-progress` has used
+// since #3168. So work executed AFTER a phase was verified silently kept the
+// phase's `Complete` label, and with it a ROADMAP-contradicting
+// `phases_completed` / `percent` in `stats`, until someone re-ran verification.
+//
+// `human_needed` is NOT part of this: it is a real verifier verdict that means
+// a human must run the phase's UAT, and `Needs Review` is the label that says
+// so. It stays exactly as it is.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase status does not call a stale passing verification Complete', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  /**
+   * Seed a milestone-scoped project whose single phase has its one plan
+   * executed and a `01-VERIFICATION.md` carrying `verificationStatus`.
+   *
+   * `freshness` orders the two artifacts' mtimes explicitly (never relying on
+   * write order or filesystem timestamp granularity): `'stale'` makes the
+   * SUMMARY newer than the verification report — the exact shape
+   * `findStaleVerificationSummary` calls stale — and `'fresh'` makes the
+   * report newer. Milestone scoping is required for the percentages:
+   * ADR-3180 rule 4 (#3217) withholds them unless `phase_scope` is complete.
+   */
+  function seedVerifiedPhase(verificationStatus, freshness) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['---', 'milestone: v1.0', 'current_phase: "01"', 'status: executing', '---', '', '# State', ''].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap', '', '## v1.0 Demo', '', '### Phase 01: Auth', '', '**Plans**: 1 plan', '',
+        '## Progress', '',
+        '| Phase | Plans Complete | Status | Completed |',
+        '|-------|----------------|--------|-----------|',
+        '| 01    | 0/1            | Planned |           |', '',
+      ].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-auth');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan');
+    const summaryPath = path.join(phaseDir, '01-01-SUMMARY.md');
+    const verificationPath = path.join(phaseDir, '01-VERIFICATION.md');
+    fs.writeFileSync(summaryPath, '# Summary');
+    fs.writeFileSync(verificationPath, `---\nstatus: ${verificationStatus}\n---\n# Verification\n`);
+    const olderSec = 2_000_000_000;
+    const newerSec = olderSec + 3600;
+    const older = freshness === 'stale' ? verificationPath : summaryPath;
+    const newer = freshness === 'stale' ? summaryPath : verificationPath;
+    fs.utimesSync(older, olderSec, olderSec);
+    fs.utimesSync(newer, newerSec, newerSec);
+    return phaseDir;
+  }
+
+  /** The single phase's typed status from `stats` JSON. */
+  function statsPhaseStatus(json) {
+    assert.strictEqual(json.phases.length, 1, 'fixture must seed exactly one phase');
+    return json.phases[0].status;
+  }
+
+  test('a passed report a later SUMMARY overtook reports Executed, not Complete', () => {
+    seedVerifiedPhase('passed', 'stale');
+
+    const result = runGsdTools('stats', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const json = JSON.parse(result.output);
+
+    assert.strictEqual(statsPhaseStatus(json), 'Executed');
+    assert.strictEqual(json.phases_completed, 0, 'a stale verification verifies nothing');
+    assert.strictEqual(json.percent, 0, 'the verified-completion percentage must agree with the count');
+    assert.strictEqual(json.plan_percent, 100, 'the plan IS executed — only the completion claim changes');
+  });
+
+  test('stats agrees with the canonical completion owner roadmap update-plan-progress uses', () => {
+    seedVerifiedPhase('passed', 'stale');
+
+    // roadmap.cts routes this same phase through `isPhaseComplete`, which
+    // consults the staleness owner — so it writes the execution wording, not
+    // the completion wording. `stats` must not contradict it.
+    const roadmapResult = runGsdTools('roadmap update-plan-progress 01 --raw', tmpDir);
+    assert.ok(roadmapResult.success, `Command failed: ${roadmapResult.error}`);
+    const roadmapText = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    assert.ok(
+      roadmapText.includes('plans executed'),
+      `the completion owner does not call this phase complete; baseline changed:\n${roadmapText}`,
+    );
+
+    const json = JSON.parse(runGsdTools('stats', tmpDir).output);
+    assert.strictEqual(json.phases_completed, 0, 'stats must not call complete what the owner does not');
+  });
+
+  test('progress table labels the stale-verified phase Executed in its Status column', () => {
+    seedVerifiedPhase('passed', 'stale');
+
+    const result = runGsdTools('progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const json = JSON.parse(result.output);
+    const phase = json.phases.find((p) => p.number === '01');
+    assert.ok(phase, `fixture phase missing from progress output: ${result.output}`);
+    assert.strictEqual(phase.status, 'Executed');
+  });
+
+  test('a passed report newer than every SUMMARY still reports Complete', () => {
+    seedVerifiedPhase('passed', 'fresh');
+
+    const json = JSON.parse(runGsdTools('stats', tmpDir).output);
+    assert.strictEqual(statsPhaseStatus(json), 'Complete', 'the staleness gate must not swallow a real pass');
+    assert.strictEqual(json.phases_completed, 1);
+    assert.strictEqual(json.percent, 100);
+  });
+
+  test('human_needed stays Needs Review whether the report is stale or fresh', () => {
+    for (const freshness of ['fresh', 'stale']) {
+      cleanup(tmpDir);
+      tmpDir = createTempProject();
+      seedVerifiedPhase('human_needed', freshness);
+
+      const json = JSON.parse(runGsdTools('stats', tmpDir).output);
+      assert.strictEqual(
+        statsPhaseStatus(json), 'Needs Review',
+        `human_needed is a verifier verdict a human must act on, not a staleness question (${freshness})`,
+      );
+      assert.strictEqual(json.phases_completed, 0);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // check-commit command (#1395)
 // ─────────────────────────────────────────────────────────────────────────────
 

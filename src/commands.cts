@@ -64,7 +64,7 @@ import planScanMod = require('./plan-scan.cjs');
 const { scanPhasePlans } = planScanMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
 import verificationMod = require('./verification.cjs');
-const { resolveVerificationFile } = verificationMod;
+const { resolveVerificationFile, findStaleVerificationSummary } = verificationMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -214,7 +214,30 @@ function determinePhaseStatus(plans: number, summaries: number, phaseDir: string
       // Normalise to lower-case to preserve the prior case-insensitive behaviour
       // while reading only the frontmatter `status` key (not the full body text).
       const fmStatus = typeof fm['status'] === 'string' ? fm['status'].trim().toLowerCase() : '';
-      if (fmStatus === 'passed') return 'Complete';
+      if (fmStatus === 'passed') {
+        // #2348 staleness, applied at the last reader of this latch that was
+        // still deciding on the latch alone. A `*-VERIFICATION.md` a later
+        // `*-SUMMARY.md` has overtaken is routed `stale` — not `passed` — by
+        // `readVerificationStatus`, which is what `isPhaseComplete` wraps and
+        // what `roadmap update-plan-progress` has consulted since #3168. So
+        // work executed AFTER a phase was verified kept the phase's
+        // `Complete` label here (and with it `stats`'s `phases_completed` and
+        // `percent`) while the ROADMAP the same project writes said otherwise.
+        // Same owner, same answer now.
+        //
+        // Fail-open exactly as that owner is: `{determined:false}` (an
+        // fs/scan/clock failure) is NOT stale — an unreadable disk must not
+        // silently demote a genuinely verified phase.
+        //
+        // Only reached for a `passed` latch, so a phase that is not claiming
+        // completion costs no extra work.
+        const staleCheck = findStaleVerificationSummary(phaseDir);
+        if (staleCheck.determined === true && staleCheck.stale === true) return 'Executed';
+        return 'Complete';
+      }
+      // A verifier verdict that a human must act on, not a staleness question:
+      // `human_needed` means the phase's *-UAT.md is waiting on a person, and
+      // `Needs Review` is the label that says so, stale or not.
       if (fmStatus === 'human_needed') return 'Needs Review';
       if (fmStatus === 'gaps_found') return 'Executed';
       // Verification exists but unrecognized status — treat as executed
