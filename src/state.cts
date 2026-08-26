@@ -27,6 +27,7 @@ const {
   phaseKeyFromDir,
   isSentinelPhaseId,
   scopeToPhase,
+  extractPhaseToken,
 } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
@@ -44,7 +45,7 @@ const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter, propagateC
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import verificationMod = require('./verification.cjs');
-const { isPhaseComplete } = verificationMod;
+const { isPhaseComplete, resolveVerificationFile, findStaleVerificationSummary } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
@@ -4963,74 +4964,102 @@ function cmdStateValidate(cwd: string, raw: boolean, opts: { strict?: boolean } 
           ));
         }
 
-        // Check for VERIFICATION.md — scoped to THIS phase's own token (#3511)
-        // so a stray, cross-phase, or ad-hoc VERIFICATION file cannot claim
-        // this phase's status has drifted.
+        // Enumerate this phase's verification evidence — scoped to THIS
+        // phase's own token (#3511) so a stray or cross-phase VERIFICATION
+        // file cannot claim this phase's status has drifted.
         //
-        // WARNING-4 (#3511 review): the pre-filter grammar here is
-        // deliberately BROADER than the `-VERIFICATION.md` suffix every
-        // other site in the codebase uses — `.includes('VERIFICATION')`
-        // admits names like `03_VERIFICATION.md` (underscore, no dash) that
-        // the dashed grammar would reject outright. That breadth predates
-        // #3511 and is intentional here (this is a best-effort drift
-        // WARNING scan, not an authoritative single-pick resolver), so it is
-        // left as-is rather than narrowed to match the dashed sites — doing
-        // so would be a separate, un-asked-for behavior change (S006/S007).
-        // What #3511 DOES change is that a name this broader grammar admits
-        // is now ALSO subject to the same `scopeToPhase` membership check as
-        // every dashed-grammar site, so a stray `04_VERIFICATION.md`-shaped
-        // file in phase 03's directory is excluded exactly like a stray
-        // `04-VERIFICATION.md` would be — while `03_VERIFICATION.md` (own
-        // phase, underscore separator) is NOT excluded: `isPhaseArtifact`
-        // (`phase-id.cts`) accepts `_` as a candidate-boundary separator
-        // alongside `-` and `.` for exactly this reason, so an S006/S007
-        // scan of `03-alpha/03_VERIFICATION.md` still resolves to S006
-        // ("verification passed" drift), not a false S007.
+        // WARNING-4 (#3511 review): this pre-filter grammar is deliberately
+        // BROADER than the `-VERIFICATION.md` suffix every other site in the
+        // codebase uses — `.includes('VERIFICATION')` admits names like
+        // `03_VERIFICATION.md` (underscore, no dash) that the dashed grammar
+        // would reject outright. That breadth predates #3511 and is retained
+        // here unchanged, but its job is narrower than it was: it answers
+        // S007's "does this phase have ANY verification evidence?" gate below,
+        // and it is S006's LAST-RESORT single pick for a phase whose report
+        // the dashed grammar cannot recognise at all. S006 no longer WALKS
+        // this list — that loop is what let an ad-hoc worksheet answer for the
+        // phase's real report (see below). Sorted so the last-resort pick is
+        // deterministic across filesystems.
         const files = fs.readdirSync(phaseDirPath);
         const phaseDirBaseName = path.basename(phaseDirPath);
         const verificationFiles = scopeToPhase(
           files.filter(f => f.includes('VERIFICATION') && f.endsWith('.md')),
           phaseDirBaseName,
-        );
-        for (const vf of verificationFiles) {
+        ).slice().sort();
+        // S006 asks ONE question — "has this phase's verification passed?" —
+        // and that question already has an owner. Route it through the same
+        // seams every other reader uses instead of re-deriving it here:
+        //
+        //   * `resolveVerificationFile` (#3357/#3492/#3511/#3518) single-picks
+        //     THE phase's report. The loop this replaces fired on ANY
+        //     phase-scoped verification file, so an ad-hoc
+        //     `01-CORRECTION-VERIFICATION.md` worksheet latched `passed`
+        //     advised `state complete-phase` for a phase whose own report
+        //     reads `gaps_found`. `allowBare` matches `determinePhaseStatus`
+        //     (commands.cts), the sibling status reader.
+        //   * `findStaleVerificationSummary` (#2348) is the staleness owner. A
+        //     `passed` report that a later SUMMARY has already invalidated is
+        //     routed `stale` — not `passed` — by `readVerificationStatus`, so
+        //     advising completion from it contradicted every other surface.
+        //     Fail-open exactly as that owner is: `{determined:false}` (an
+        //     fs/scan/clock failure) does not suppress the warning.
+        //   * The comparison is EXACT and lowercase, matching the
+        //     `VERIFICATION_ROUTING_TABLE` key lookup in `verification.cts`:
+        //     `PASSED` is an unrecognised value there, routed to `unknown`,
+        //     so it must not be a completion latch here either. (The prior
+        //     case-insensitive read was the only reader in the codebase that
+        //     accepted it.)
+        //
+        // #1159 (Defect A), applied at the last call site still carrying the
+        // pre-fix form: the status is read ONLY from the frontmatter `status`
+        // key. The whole-file `/status:\s*passed/i` this replaces was
+        // unanchored (so it matched inside `previous_status: passed`), `\s`
+        // crossed newlines, and it was blind to prose. This is
+        // DEFECT.FRONTMATTER-SCALAR-BROAD-GREP at a TypeScript call site
+        // rather than a shell one, which is why
+        // scripts/lint-frontmatter-scalar-broad-grep.cjs (markdown-only)
+        // never saw it.
+        //
+        // The broad `verificationFiles` grammar above is deliberately
+        // untouched (see WARNING-4): it still answers S007's "does any
+        // verification exist at all?" gate, unchanged. Only S006's own
+        // pass/no-pass decision moves to the owners.
+        //
+        // The broad list is still the LAST resort, and only when the canonical
+        // resolver recognises nothing at all: a phase whose sole report is
+        // `03_VERIFICATION.md` keeps its S006 (WARNING-4's case), because
+        // there is nothing for the resolver to disambiguate there — no dashed
+        // or bare candidate exists. Taken alphabetically-first over the sorted
+        // scoped list so the pick is deterministic across filesystems, exactly
+        // as the resolver's own tier-2 fallback is. What can no longer happen
+        // either way is the old loop's behaviour: firing on whichever of
+        // several files happened to say `passed`.
+        const s006VerificationFile = resolveVerificationFile(files, {
+          allowBare: true,
+          phaseToken: extractPhaseToken(phaseDirBaseName),
+          phaseDirName: phaseDirBaseName,
+        }) ?? (verificationFiles.length > 0 ? verificationFiles[0] : null);
+        if (s006VerificationFile !== null && /executing/i.test(status)) {
           try {
-            const verificationFilePath = path.join(phaseDirPath, vf);
+            const verificationFilePath = path.join(phaseDirPath, s006VerificationFile);
             const vContent = fs.readFileSync(verificationFilePath, 'utf-8');
-            // #1159 (Defect A), applied at the last call site still carrying the
-            // pre-fix form: read ONLY the frontmatter `status` key. The whole-file
-            // `/status:\s*passed/i` this replaces was unanchored (so it matched
-            // inside `previous_status: passed`), `\s` crossed newlines, and it was
-            // blind to prose — a phase latched `gaps_found` whose body merely
-            // quoted another phase's `status: passed` reported S006 "verification
-            // passed — phase may be complete" and advised `state complete-phase`
-            // on a phase that had FAILED verification. Same read the sibling
-            // scans already perform (commands.cts's determinePhaseStatus,
-            // phase.cts's cmdPhaseComplete VERIFICATION loop,
-            // verification.cts's readVerificationStatus); this is
-            // DEFECT.FRONTMATTER-SCALAR-BROAD-GREP at a TypeScript call site
-            // rather than a shell one, which is why
-            // scripts/lint-frontmatter-scalar-broad-grep.cjs (markdown-only)
-            // never saw it.
-            //
-            // The FILE grammar above is deliberately untouched (see WARNING-4):
-            // only how the status is read inside each file changes.
             const vFm = extractFrontmatter(vContent, verificationFilePath) as Record<string, unknown>;
-            // Lower-cased to preserve the prior `/i` comparison for a
-            // title-cased `status: Passed` latch.
-            const vStatus = typeof vFm['status'] === 'string' ? vFm['status'].trim().toLowerCase() : '';
-            if (vStatus === 'passed' && /executing/i.test(status)) {
+            const vStatus = typeof vFm['status'] === 'string' ? vFm['status'].trim() : '';
+            const staleCheck = findStaleVerificationSummary(phaseDirPath);
+            const isStale = staleCheck.determined === true && staleCheck.stale === true;
+            if (vStatus === 'passed' && !isStale) {
               warnings.push(stateDiagnostic(
                 'S006',
                 SEVERITY.WARNING,
-                `Status drift: STATE.md says "${status}" but ${vf} shows verification passed — phase may be complete`,
+                `Status drift: STATE.md says "${status}" but ${s006VerificationFile} shows verification passed — phase may be complete`,
                 'Run state complete-phase (or otherwise advance STATE.md status past "executing")',
               ));
             }
           } catch { /* best-effort (#2245 audit): cmdStateValidate is a diagnostic
-             * warnings scan across N VERIFICATION.md files — one unreadable file
-             * (permission/race) must not abort the scan of the rest; it's simply
-             * excluded from drift detection. Does not degrade `scope` — the other
-             * N-1 files were consulted fine. */ }
+             * warnings scan — an unreadable verification report (permission/race)
+             * must not abort the rest of the scan; it is simply excluded from
+             * drift detection. Does not degrade `scope` — every other check ran
+             * fine. */ }
         }
 
         // Check if all plans have summaries but status still says executing

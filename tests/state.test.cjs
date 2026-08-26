@@ -4505,7 +4505,7 @@ describe('state validate command', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// S006 reads the VERIFICATION frontmatter `status` key, never the body.
+// S006 asks the canonical verification owner, not a hand-rolled file scan.
 //
 // #1159 (Defect A) fixed the whole-file `/status:\s*passed/` grep in
 // `commands.cts:determinePhaseStatus` and in `phase.cts`'s cmdPhaseComplete
@@ -4518,9 +4518,21 @@ describe('state validate command', () => {
 // on a phase that failed verification. This is the
 // DEFECT.FRONTMATTER-SCALAR-BROAD-GREP class (CONTEXT.md) applied to a
 // TypeScript call site rather than a shell one.
+//
+// Reading the frontmatter key is necessary but not sufficient. S006 also
+// looped over EVERY phase-scoped `*VERIFICATION*.md` and fired on any of them,
+// so an ad-hoc `01-CORRECTION-VERIFICATION.md` worksheet (#3357) latched
+// `passed` advised completion for a phase whose real report says `gaps_found`;
+// and it had no staleness gate, so a `passed` report that a later SUMMARY has
+// already invalidated (#2348) advised completion too. The single-pick
+// `resolveVerificationFile` resolver and `findStaleVerificationSummary` — the
+// owners every other reader already routes through — answer both, and their
+// exact-value routing table (`verification.cts`) means only a lowercase
+// `passed` is the latch: an uppercase `PASSED` is an unrecognised value, which
+// the owner routes to `unknown`, never to "complete".
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('state validate — S006 reads the frontmatter status key, not body prose', () => {
+describe('state validate — S006 delegates to the canonical verification owner', () => {
   let tmpDir;
 
   beforeEach(() => {
@@ -4531,15 +4543,41 @@ describe('state validate — S006 reads the frontmatter status key, not body pro
     cleanup(tmpDir);
   });
 
-  /** Write an executing STATE.md pointing at phase 01 and seed `01-demo/` with `verificationBody`. */
-  function seedExecutingPhaseWithVerification(verificationBody) {
+  /**
+   * Write an executing STATE.md pointing at phase 01 and seed `01-demo/` with
+   * `verificationBody` as its `01-VERIFICATION.md`.
+   *
+   * `extraFiles` seeds sibling files ({ filename: body }) — used for the
+   * ad-hoc-worksheet fixture. `summary` seeds a paired `01-01-PLAN.md` /
+   * `01-01-SUMMARY.md`; `'stale'` back-dates the verification report so the
+   * summary is NEWER than it (the exact shape `findStaleVerificationSummary`
+   * calls stale), `'fresh'` back-dates the summary instead. Both mtimes are
+   * set explicitly so the fixture never rides on filesystem timestamp
+   * granularity.
+   */
+  function seedExecutingPhaseWithVerification(verificationBody, { extraFiles = {}, summary = 'none' } = {}) {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
       ['---', 'current_phase: "01"', 'status: executing', '---', '', '# Project State', ''].join('\n'),
     );
     const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-demo');
     fs.mkdirSync(phaseDir, { recursive: true });
-    fs.writeFileSync(path.join(phaseDir, '01-VERIFICATION.md'), verificationBody);
+    const verificationPath = path.join(phaseDir, '01-VERIFICATION.md');
+    fs.writeFileSync(verificationPath, verificationBody);
+    for (const [name, body] of Object.entries(extraFiles)) {
+      fs.writeFileSync(path.join(phaseDir, name), body);
+    }
+    if (summary !== 'none') {
+      const summaryPath = path.join(phaseDir, '01-01-SUMMARY.md');
+      fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+      fs.writeFileSync(summaryPath, '# Summary\n');
+      const olderSec = 2_000_000_000;
+      const newerSec = olderSec + 3600;
+      const older = summary === 'stale' ? verificationPath : summaryPath;
+      const newer = summary === 'stale' ? summaryPath : verificationPath;
+      fs.utimesSync(older, olderSec, olderSec);
+      fs.utimesSync(newer, newerSec, newerSec);
+    }
     const result = runGsdTools('state validate', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
     return JSON.parse(result.output);
@@ -4585,6 +4623,42 @@ describe('state validate — S006 reads the frontmatter status key, not body pro
     );
   });
 
+  test('an ad-hoc CORRECTION worksheet latched passed does not fire S006 over the phase’s own gaps_found report (#3357)', () => {
+    const output = seedExecutingPhaseWithVerification(
+      ['---', 'status: gaps_found', '---', '', '# Gaps', ''].join('\n'),
+      {
+        extraFiles: {
+          '01-CORRECTION-VERIFICATION.md': ['---', 'status: passed', '---', '', '# Correction worksheet', ''].join('\n'),
+        },
+      },
+    );
+    assert.ok(
+      !findWarning(output, 'S006'),
+      "S006 must read the phase's own report, not whichever phase-scoped worksheet happens to say passed",
+    );
+  });
+
+  test('a passed report a later SUMMARY has already invalidated does not fire S006 (#2348 staleness)', () => {
+    const output = seedExecutingPhaseWithVerification(
+      ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+      { summary: 'stale' },
+    );
+    assert.ok(
+      !findWarning(output, 'S006'),
+      'a stale passed report must not advise completion — the shared staleness owner calls this phase stale, not passed',
+    );
+  });
+
+  test('an uppercase frontmatter `status: PASSED` latch does not fire S006', () => {
+    const output = seedExecutingPhaseWithVerification(
+      ['---', 'status: PASSED', '---', '', '# Verification', ''].join('\n'),
+    );
+    assert.ok(
+      !findWarning(output, 'S006'),
+      'the canonical owner routes an unrecognised value to `unknown`; S006 must match its exact-value semantics',
+    );
+  });
+
   test('a genuine frontmatter `status: passed` latch still fires S006', () => {
     const output = seedExecutingPhaseWithVerification(
       ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
@@ -4594,13 +4668,14 @@ describe('state validate — S006 reads the frontmatter status key, not body pro
     assert.strictEqual(s006.severity, SEVERITY.WARNING);
   });
 
-  test('a title-cased frontmatter `status: PASSED` latch still fires S006', () => {
+  test('a fresh passed latch still fires S006 when the phase’s summaries predate the report', () => {
     const output = seedExecutingPhaseWithVerification(
-      ['---', 'status: PASSED', '---', '', '# Verification', ''].join('\n'),
+      ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+      { summary: 'fresh' },
     );
     assert.ok(
       findWarning(output, 'S006'),
-      'the pre-existing case-insensitive comparison must be preserved',
+      'the staleness gate must not suppress the true positive it exists to protect',
     );
   });
 });
@@ -5639,7 +5714,7 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     assertNoDriftKey(output);
   });
 
-  test('B7: one unreadable verification file does not abort the scan', (t) => {
+  test('B7: an unreadable non-selected verification file does not abort the scan', (t) => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
       [
@@ -5655,7 +5730,7 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     fs.mkdirSync(phaseDir, { recursive: true });
     fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
     const brokenPath = path.join(phaseDir, '01-A-VERIFICATION.md');
-    const okPath = path.join(phaseDir, '01-B-VERIFICATION.md');
+    const okPath = path.join(phaseDir, '01-VERIFICATION.md');
     fs.writeFileSync(brokenPath, ['---', 'status: passed', '---', ''].join('\n'));
     fs.writeFileSync(okPath, ['---', 'status: passed', '---', ''].join('\n'));
 
@@ -5672,15 +5747,58 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
 
     const raw = captureStdout(() => stateLib.cmdStateValidate(tmpDir, false));
     const output = JSON.parse(raw);
-    // Per-file swallow (#2245 audit) is unchanged: the other verification
-    // file is still consulted, so its S006 diagnostic still fires, and the
-    // whole scan is NOT degraded to UNREADABLE just because one file 404s.
+    // S006 single-picks this phase's own report through the canonical
+    // resolver, so the phase-token-pinned `01-VERIFICATION.md` wins over the
+    // ad-hoc `01-A-VERIFICATION.md` sibling and the unreadable file is never
+    // opened at all. The scan is NOT degraded to UNREADABLE by its presence.
     // Asserted on the S006 `Diagnostic`'s `code` alone, not its `message`
     // prose (CONTRIBUTING.md's "Prohibited: Raw Text Matching on Test
-    // Outputs") — the vf filename isn't pinned since readdirSync order
-    // across the two verification files isn't guaranteed.
+    // Outputs").
     const s006 = findWarning(output, 'S006');
-    assert.ok(s006, 'S006 must fire for the readable verification file despite the unreadable sibling');
+    assert.ok(s006, 'S006 must fire for this phase\'s own readable report despite the unreadable sibling');
+    assert.strictEqual(output.scope, SCOPE.COMPLETE);
+    assertNoDriftKey(output);
+  });
+
+  test('B7b: an unreadable SELECTED verification report is excluded from drift detection, not fatal', (t) => {
+    // The #2245 per-file swallow, restated for single-pick S006: when the file
+    // the resolver selects is the unreadable one, there is no "rest of the
+    // loop" left to continue into — what must survive is the SCAN. The command
+    // still emits a well-formed result, every non-verification check still
+    // runs (S005 below), and `scope` is not degraded to UNREADABLE; the phase
+    // simply contributes no verification drift diagnostic.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '**Status:** Executing Phase 1',
+        '**Current Phase:** 1',
+        '**Total Plans in Phase:** 3',
+        '',
+      ].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    const brokenPath = path.join(phaseDir, '01-VERIFICATION.md');
+    fs.writeFileSync(brokenPath, ['---', 'status: passed', '---', ''].join('\n'));
+
+    const originalReadFileSync = fs.readFileSync;
+    mock.method(fs, 'readFileSync', (p, ...rest) => {
+      if (p === brokenPath) {
+        const err = new Error('EACCES: permission denied, open');
+        err.code = 'EACCES';
+        throw err;
+      }
+      return originalReadFileSync.call(fs, p, ...rest);
+    });
+    t.after(() => mock.restoreAll());
+
+    const raw = captureStdout(() => stateLib.cmdStateValidate(tmpDir, false));
+    const output = JSON.parse(raw);
+    assert.ok(!findWarning(output, 'S006'), 'an unreadable report cannot latch "verification passed"');
+    assert.ok(findWarning(output, 'S005'), 'the rest of the scan must still run (plan-count drift)');
     assert.strictEqual(output.scope, SCOPE.COMPLETE);
     assertNoDriftKey(output);
   });
