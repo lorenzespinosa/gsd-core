@@ -4505,6 +4505,107 @@ describe('state validate command', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// S006 reads the VERIFICATION frontmatter `status` key, never the body.
+//
+// #1159 (Defect A) fixed the whole-file `/status:\s*passed/` grep in
+// `commands.cts:determinePhaseStatus` and in `phase.cts`'s cmdPhaseComplete
+// VERIFICATION loop, but `cmdStateValidate`'s S006 drift scan kept the
+// pre-#1159 form. That regex is unanchored (so it matches inside
+// `previous_status: passed`), `\s` crosses newlines, and it is blind to
+// prose — so a phase latched `gaps_found` whose body merely *mentions*
+// another phase's `status: passed` was reported as "verification passed —
+// phase may be complete", advising the operator to run `state complete-phase`
+// on a phase that failed verification. This is the
+// DEFECT.FRONTMATTER-SCALAR-BROAD-GREP class (CONTEXT.md) applied to a
+// TypeScript call site rather than a shell one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('state validate — S006 reads the frontmatter status key, not body prose', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  /** Write an executing STATE.md pointing at phase 01 and seed `01-demo/` with `verificationBody`. */
+  function seedExecutingPhaseWithVerification(verificationBody) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['---', 'current_phase: "01"', 'status: executing', '---', '', '# Project State', ''].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-demo');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-VERIFICATION.md'), verificationBody);
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  test('body prose quoting another phase’s `status: passed` does not fire S006 against a gaps_found latch', () => {
+    const output = seedExecutingPhaseWithVerification(
+      ['---', 'status: gaps_found', '---', '', 'Phase 02 was latched status: passed last week.', ''].join('\n'),
+    );
+    assert.ok(
+      !findWarning(output, 'S006'),
+      'a gaps_found frontmatter latch must not report "verification passed" because of body prose',
+    );
+  });
+
+  test('`previous_status: passed` in the frontmatter does not fire S006', () => {
+    const output = seedExecutingPhaseWithVerification(
+      ['---', 'status: gaps_found', 'previous_status: passed', '---', '', 'No prose here.', ''].join('\n'),
+    );
+    assert.ok(
+      !findWarning(output, 'S006'),
+      'S006 must read the `status` key exactly, never a longer key that ends in it',
+    );
+  });
+
+  test('a `status:` line whose value continues on the next body line does not fire S006', () => {
+    const output = seedExecutingPhaseWithVerification(
+      ['---', 'status: human_needed', '---', '', 'The old status:', 'passed but not any more.', ''].join('\n'),
+    );
+    assert.ok(
+      !findWarning(output, 'S006'),
+      'the status match must not cross a line break in the body',
+    );
+  });
+
+  test('a report with no frontmatter block at all does not fire S006 from its body', () => {
+    const output = seedExecutingPhaseWithVerification(
+      ['# Verification notes', '', 'status: passed', ''].join('\n'),
+    );
+    assert.ok(
+      !findWarning(output, 'S006'),
+      'a body-only `status:` line is not a frontmatter latch',
+    );
+  });
+
+  test('a genuine frontmatter `status: passed` latch still fires S006', () => {
+    const output = seedExecutingPhaseWithVerification(
+      ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+    );
+    const s006 = findWarning(output, 'S006');
+    assert.ok(s006, 'the true positive must be preserved');
+    assert.strictEqual(s006.severity, SEVERITY.WARNING);
+  });
+
+  test('a title-cased frontmatter `status: PASSED` latch still fires S006', () => {
+    const output = seedExecutingPhaseWithVerification(
+      ['---', 'status: PASSED', '---', '', '# Verification', ''].join('\n'),
+    );
+    assert.ok(
+      findWarning(output, 'S006'),
+      'the pre-existing case-insensitive comparison must be preserved',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Phase 12 (#3310, ADR-3180 §8.4 rule 3) — S0NN coded-diagnostic fixtures for
 // `cmdStateValidate`. `warnings` is now `Diagnostic[]` (not bare strings) and
 // `drift` is gone from every output shape. One test per code, title naming

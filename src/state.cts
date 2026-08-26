@@ -4994,8 +4994,31 @@ function cmdStateValidate(cwd: string, raw: boolean, opts: { strict?: boolean } 
         );
         for (const vf of verificationFiles) {
           try {
-            const vContent = fs.readFileSync(path.join(phaseDirPath, vf), 'utf-8');
-            if (/status:\s*passed/i.test(vContent) && /executing/i.test(status)) {
+            const verificationFilePath = path.join(phaseDirPath, vf);
+            const vContent = fs.readFileSync(verificationFilePath, 'utf-8');
+            // #1159 (Defect A), applied at the last call site still carrying the
+            // pre-fix form: read ONLY the frontmatter `status` key. The whole-file
+            // `/status:\s*passed/i` this replaces was unanchored (so it matched
+            // inside `previous_status: passed`), `\s` crossed newlines, and it was
+            // blind to prose — a phase latched `gaps_found` whose body merely
+            // quoted another phase's `status: passed` reported S006 "verification
+            // passed — phase may be complete" and advised `state complete-phase`
+            // on a phase that had FAILED verification. Same read the sibling
+            // scans already perform (commands.cts's determinePhaseStatus,
+            // phase.cts's cmdPhaseComplete VERIFICATION loop,
+            // verification.cts's readVerificationStatus); this is
+            // DEFECT.FRONTMATTER-SCALAR-BROAD-GREP at a TypeScript call site
+            // rather than a shell one, which is why
+            // scripts/lint-frontmatter-scalar-broad-grep.cjs (markdown-only)
+            // never saw it.
+            //
+            // The FILE grammar above is deliberately untouched (see WARNING-4):
+            // only how the status is read inside each file changes.
+            const vFm = extractFrontmatter(vContent, verificationFilePath) as Record<string, unknown>;
+            // Lower-cased to preserve the prior `/i` comparison for a
+            // title-cased `status: Passed` latch.
+            const vStatus = typeof vFm['status'] === 'string' ? vFm['status'].trim().toLowerCase() : '';
+            if (vStatus === 'passed' && /executing/i.test(status)) {
               warnings.push(stateDiagnostic(
                 'S006',
                 SEVERITY.WARNING,
