@@ -115,6 +115,31 @@ interface EffortSyncChange {
   to: string | null;
 }
 
+// ─── Progress vocabulary ──────────────────────────────────────────────────────
+
+/**
+ * The word every rendered plan-count ratio in this module uses.
+ *
+ * A `*-SUMMARY.md` on disk means a plan was EXECUTED, not that it was verified
+ * — `determinePhaseStatus` below returns `Executed` (never `Complete`) for
+ * exactly that state, and a deliberately halted plan (#2830) writes a SUMMARY
+ * too. `roadmap.cts`'s `cmdRoadmapUpdatePlanProgress` already owns this
+ * distinction for the artifact it writes: `N/M plans executed` until the
+ * phase's VERIFICATION latch reads `passed`, `N/M plans complete` after. These
+ * two renderers are milestone-wide aggregates spanning phases with mixed
+ * verification, so the completion arm can never be correct for them — the
+ * execution arm always is.
+ *
+ * `cmdStats`'s `**Phases:**` line is the verified-completion claim (it counts
+ * `status === 'Complete'`, gated on a passing latch) and keeps saying
+ * "complete". Only the plan-count ratios are renamed; no JSON key changes
+ * (`percent` / `plan_percent` are Tier-2 observable output — ADR-3180
+ * Decision 3).
+ */
+const PLAN_EXECUTION_NOUN = 'plans executed';
+/** The `**Plans:**` label's arm — the row already leads with the noun. */
+const PLAN_EXECUTION_ADJECTIVE = 'executed';
+
 // ─── Phase Status ─────────────────────────────────────────────────────────────
 
 /**
@@ -2410,7 +2435,7 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
     const percentSuffix = percent === null ? '' : ` (${percent}%)`;
     let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''}\n\n`;
-    out += `**Progress:** [${bar}] ${totalSummaries}/${totalPlans} plans${percentSuffix}\n\n`;
+    out += `**Progress:** [${bar}] ${totalSummaries}/${totalPlans} ${PLAN_EXECUTION_NOUN}${percentSuffix}\n\n`;
     out += `| Phase | Name | Plans | Status |\n`;
     out += `|-------|------|-------|--------|\n`;
     for (const p of phases) {
@@ -2422,7 +2447,7 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
     const percentSuffix = percent === null ? '' : ` (${percent}%)`;
-    const text = `[${bar}] ${totalSummaries}/${totalPlans} plans${percentSuffix}`;
+    const text = `[${bar}] ${totalSummaries}/${totalPlans} ${PLAN_EXECUTION_NOUN}${percentSuffix}`;
     output({ bar: text, percent, completed: totalSummaries, total: totalPlans }, raw, text);
   } else {
     // JSON format
@@ -2838,7 +2863,7 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     const percentSuffix = percent === null ? '' : ` (${percent}%)`;
     out += `**Progress:** [${bar}] ${completedPhases}/${phases.length} phases${percentSuffix}\n`;
     if (totalPlans > 0 && planPercent !== null) {
-      out += `**Plans:** ${totalSummaries}/${totalPlans} complete (${planPercent}%)\n`;
+      out += `**Plans:** ${totalSummaries}/${totalPlans} ${PLAN_EXECUTION_ADJECTIVE} (${planPercent}%)\n`;
     }
     out += `**Phases:** ${completedPhases}/${phases.length} complete\n`;
     if (requirementsTotal > 0) {

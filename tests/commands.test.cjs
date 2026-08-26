@@ -2596,6 +2596,160 @@ describe('stats command', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Execution counts are labelled "executed", never "complete".
+//
+// `stats table`'s Plans line rendered `N/M complete (P%)` from
+// `totalSummaries / totalPlans` — a SUMMARY on disk means a plan was EXECUTED,
+// not that it was verified. The same numbers are already named neutrally in
+// every typed surface beside it (`stats --raw`'s `plan_percent`), and
+// `roadmap update-plan-progress` writes `N/M plans executed` into ROADMAP.md
+// for exactly the state this line called "complete" — so the rendered stats
+// table contradicted both the roadmap and its own `Status` column, which reads
+// `Executed`. A deliberately halted plan (#2830) hit the same line: it still
+// writes a SUMMARY, so a designed stop rendered as "1/1 complete (100%)".
+//
+// `stats table`'s **Phases:** line is the verified-completion claim (it counts
+// `status === 'Complete'`, which is gated on a passing VERIFICATION latch) and
+// is deliberately unchanged. The Plans line is a milestone-wide execution
+// aggregate spanning phases with mixed verification, so "complete" can never be
+// correct for it; "executed" always is.
+//
+// Text assertions here run under this file's `allow-test-rule:
+// source-text-is-the-product` header and match the sibling
+// `stats command > table format renders readable output` test's shape — this
+// rendered markdown IS the operator-facing product surface under test.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('progress/stats renders label execution as executed, not complete', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  /**
+   * Seed a milestone-scoped project (STATE.md `milestone:` + a `## v1.0`
+   * ROADMAP heading) whose single phase has every plan executed. Milestone
+   * scoping is required: ADR-3180 rule 4 (#3217) withholds every percentage —
+   * and with it the `**Plans:**` line — unless `phase_scope` is `complete`.
+   */
+  function seedExecutedPhase({ verification = null, summaryBody = '# Summary' } = {}) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['---', 'milestone: v1.0', 'current_phase: "01"', 'status: executing', '---', '', '# State', ''].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap', '', '## v1.0 Demo', '', '### Phase 01: Auth', '', '**Plans**: 1 plan', '',
+        '## Progress', '',
+        '| Phase | Plans Complete | Status | Completed |',
+        '|-------|----------------|--------|-----------|',
+        '| 01    | 0/1            | Planned |           |', '',
+      ].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-auth');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), summaryBody);
+    if (verification !== null) {
+      fs.writeFileSync(path.join(phaseDir, '01-VERIFICATION.md'), verification);
+    }
+    return phaseDir;
+  }
+
+  test('stats table does not call an unverified plan-execution count "complete"', () => {
+    seedExecutedPhase({ verification: '---\nstatus: gaps_found\n---\n# Gaps\n' });
+
+    const result = runGsdTools('stats table', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const rendered = JSON.parse(result.output).rendered;
+
+    // The typed surface agrees the phase is NOT complete — the render must not
+    // say otherwise.
+    const json = JSON.parse(runGsdTools('stats', tmpDir).output);
+    assert.strictEqual(json.phases_completed, 0, 'a gaps_found phase must not count as completed');
+    assert.strictEqual(json.plan_percent, 100, 'every plan IS executed');
+
+    assert.ok(
+      !rendered.includes('1/1 complete'),
+      `the Plans line must not claim completion for executed-but-unverified plans, got:\n${rendered}`,
+    );
+    assert.ok(
+      rendered.includes('1/1 executed'),
+      `the Plans line must name the execution ratio unambiguously, got:\n${rendered}`,
+    );
+  });
+
+  test('stats table does not call a deliberately halted plan "complete" (#2830)', () => {
+    seedExecutedPhase({ summaryBody: '---\nstatus: halted\n---\n\n# Summary\nStopped on purpose.\n' });
+
+    const result = runGsdTools('stats table', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const rendered = JSON.parse(result.output).rendered;
+
+    assert.ok(
+      !rendered.includes('1/1 complete'),
+      `a designed stop must never render as completion, got:\n${rendered}`,
+    );
+    assert.ok(rendered.includes('1/1 executed'), `got:\n${rendered}`);
+  });
+
+  test('stats table agrees with the word roadmap update-plan-progress writes for the same phase', () => {
+    seedExecutedPhase({ verification: '---\nstatus: gaps_found\n---\n# Gaps\n' });
+
+    const roadmapResult = runGsdTools('roadmap update-plan-progress 01 --raw', tmpDir);
+    assert.ok(roadmapResult.success, `Command failed: ${roadmapResult.error}`);
+    const roadmapText = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    // roadmap.cts already owns this distinction: `plans executed` until the
+    // phase's VERIFICATION latch is `passed`, `plans complete` after.
+    assert.ok(roadmapText.includes('plans executed'), `roadmap baseline changed:\n${roadmapText}`);
+
+    const rendered = JSON.parse(runGsdTools('stats table', tmpDir).output).rendered;
+    assert.ok(
+      rendered.includes('executed'),
+      `stats must use the same word the roadmap does for this state, got:\n${rendered}`,
+    );
+  });
+
+  test('stats table still reports verified phase completion on its Phases line', () => {
+    seedExecutedPhase({ verification: '---\nstatus: passed\n---\n# Verified\n' });
+
+    const rendered = JSON.parse(runGsdTools('stats table', tmpDir).output).rendered;
+    assert.ok(
+      rendered.includes('1/1 phases'),
+      `the verified-completion claim must survive, got:\n${rendered}`,
+    );
+    assert.ok(
+      rendered.includes('**Phases:** 1/1 complete'),
+      `the Phases line owns "complete", got:\n${rendered}`,
+    );
+  });
+
+  test('progress table and bar label their ratio as plans executed', () => {
+    seedExecutedPhase({ verification: '---\nstatus: gaps_found\n---\n# Gaps\n' });
+
+    const tableResult = runGsdTools('progress table --raw', tmpDir);
+    assert.ok(tableResult.success, `Command failed: ${tableResult.error}`);
+    assert.ok(
+      tableResult.output.includes('1/1 plans executed'),
+      `progress table must not render a bare completion-shaped ratio, got:\n${tableResult.output}`,
+    );
+
+    const barResult = runGsdTools('progress bar --raw', tmpDir);
+    assert.ok(barResult.success, `Command failed: ${barResult.error}`);
+    assert.ok(
+      barResult.output.includes('1/1 plans executed'),
+      `progress bar feeds the workflows/progress.md header on its own, with no Status column beside it, got:\n${barResult.output}`,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // check-commit command (#1395)
 // ─────────────────────────────────────────────────────────────────────────────
 
