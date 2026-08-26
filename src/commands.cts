@@ -191,6 +191,32 @@ function determinePhaseStatus(plans: number, summaries: number, phaseDir: string
   if (summaries < plans) return 'Planned';
 
   // summaries >= plans — check verification
+  //
+  // This does NOT delegate wholesale to `isPhaseComplete` (the canonical
+  // completion owner, src/verification.cts): that owner's `readVerificationStatus`
+  // lets a stale-summary finding override even a `human_needed` latch (gap
+  // closure and staleness both outrank it there), which would silently turn
+  // this function's `Needs Review` into `Executed` for a stale-but-awaiting-human
+  // phase — a real behavior change, not a divergence fix. `human_needed` stays a
+  // verifier verdict a human must act on regardless of staleness (see the
+  // `phase status does not call a stale passing verification Complete` test
+  // suite in tests/commands.test.cjs).
+  //
+  // What DOES need to match the owner exactly — because these were genuine
+  // divergences, not intentional differences — is FILE SELECTION and STATUS
+  // COMPARISON:
+  //   * No `allowBare` here. The owner (`readVerificationStatus`) never accepts
+  //     a bare `VERIFICATION.md` with no phase-token prefix. Allowing it only
+  //     here meant `findStaleVerificationSummary` below — which resolves
+  //     without `allowBare`, same as the owner — could not see the same bare
+  //     file this function had just picked, so it always reported "nothing
+  //     stale" for it. A stale bare report could inflate a phase to `Complete`
+  //     that the owner would never call complete.
+  //   * Exact-case comparison, matching `VERIFICATION_ROUTING_TABLE`'s
+  //     lowercase-exact keys (`verification.cts`). The previous
+  //     `.toLowerCase()` treated an uppercase `PASSED` as the `passed` latch;
+  //     the owner routes any value it does not recognise to `unknown`, never
+  //     to complete.
   try {
     const files = fs.readdirSync(phaseDir);
     // #3473 F2: routed through the shared resolver (readdir order is
@@ -202,7 +228,7 @@ function determinePhaseStatus(plans: number, summaries: number, phaseDir: string
     // phase's own (possibly non-canonical) report.
     const phaseDirName = path.basename(phaseDir);
     const phaseToken = extractPhaseToken(phaseDirName);
-    const verificationFile = resolveVerificationFile(files, { allowBare: true, phaseToken, phaseDirName });
+    const verificationFile = resolveVerificationFile(files, { phaseToken, phaseDirName });
     if (verificationFile) {
       const verificationFilePath = path.join(phaseDir, verificationFile);
       const content = platformReadSync(verificationFilePath) || '';
@@ -211,9 +237,7 @@ function determinePhaseStatus(plans: number, summaries: number, phaseDir: string
       // Full-text regexes like /status:\s*gaps_found/ match the substring inside
       // `previous_status: gaps_found`, producing incorrect phase status labels.
       const fm = extractFrontmatter(content, verificationFilePath) as Record<string, unknown>;
-      // Normalise to lower-case to preserve the prior case-insensitive behaviour
-      // while reading only the frontmatter `status` key (not the full body text).
-      const fmStatus = typeof fm['status'] === 'string' ? fm['status'].trim().toLowerCase() : '';
+      const fmStatus = typeof fm['status'] === 'string' ? fm['status'].trim() : '';
       if (fmStatus === 'passed') {
         // #2348 staleness, applied at the last reader of this latch that was
         // still deciding on the latch alone. A `*-VERIFICATION.md` a later
@@ -240,7 +264,9 @@ function determinePhaseStatus(plans: number, summaries: number, phaseDir: string
       // `Needs Review` is the label that says so, stale or not.
       if (fmStatus === 'human_needed') return 'Needs Review';
       if (fmStatus === 'gaps_found') return 'Executed';
-      // Verification exists but unrecognized status — treat as executed
+      // Verification exists but unrecognized status (including case variants
+      // like `PASSED` the owner's exact-value routing table does not
+      // recognise) — treat as executed.
       return 'Executed';
     }
   } catch { /* directory read failed — fall through */ }

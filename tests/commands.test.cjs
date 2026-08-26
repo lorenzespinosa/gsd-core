@@ -2201,7 +2201,7 @@ describe('stats command', () => {
     fs.writeFileSync(path.join(p1, '01-02-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
     fs.writeFileSync(path.join(p1, '01-02-SUMMARY.md'), '# Summary');
-    fs.writeFileSync(path.join(p1, 'VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification');
+    fs.writeFileSync(path.join(p1, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification');
 
     // Phase 2: 1 plan, 0 summaries (planned)
     fs.writeFileSync(path.join(p2, '02-01-PLAN.md'), '# Plan');
@@ -2319,10 +2319,10 @@ describe('stats command', () => {
     fs.mkdirSync(p2, { recursive: true });
     fs.writeFileSync(path.join(p1, '14-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(p1, '14-01-SUMMARY.md'), '# Summary');
-    fs.writeFileSync(path.join(p1, 'VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
+    fs.writeFileSync(path.join(p1, '14-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
     fs.writeFileSync(path.join(p2, '15-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(p2, '15-01-SUMMARY.md'), '# Summary');
-    fs.writeFileSync(path.join(p2, 'VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
+    fs.writeFileSync(path.join(p2, '15-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
 
     // #3217 (ADR-3180 §7.6 rule 4): no `vX.Y` token in the milestone heading
     // — the ROADMAP has no STATE.md milestone pointer, so a real version
@@ -2408,7 +2408,7 @@ describe('stats command', () => {
     fs.mkdirSync(p1, { recursive: true });
     fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
-    fs.writeFileSync(path.join(p1, 'VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
+    fs.writeFileSync(path.join(p1, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
 
     const result = runGsdTools('stats table', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -2440,7 +2440,7 @@ describe('stats command', () => {
     fs.mkdirSync(p1, { recursive: true });
     fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
-    fs.writeFileSync(path.join(p1, 'VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification');
+    fs.writeFileSync(path.join(p1, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification');
     const result = runGsdTools('stats', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
@@ -2455,7 +2455,7 @@ describe('stats command', () => {
     fs.mkdirSync(p1, { recursive: true });
     fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
-    fs.writeFileSync(path.join(p1, 'VERIFICATION.md'), '---\nstatus: gaps_found\n---\n# Verification');
+    fs.writeFileSync(path.join(p1, '01-VERIFICATION.md'), '---\nstatus: gaps_found\n---\n# Verification');
     const result = runGsdTools('stats', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
@@ -2469,7 +2469,7 @@ describe('stats command', () => {
     fs.mkdirSync(p1, { recursive: true });
     fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
-    fs.writeFileSync(path.join(p1, 'VERIFICATION.md'), '---\nstatus: human_needed\n---\n# Verification');
+    fs.writeFileSync(path.join(p1, '01-VERIFICATION.md'), '---\nstatus: human_needed\n---\n# Verification');
     const result = runGsdTools('stats', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
@@ -2502,7 +2502,7 @@ describe('stats command', () => {
     fs.mkdirSync(p1, { recursive: true });
     fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
-    fs.writeFileSync(path.join(p1, 'VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
+    fs.writeFileSync(path.join(p1, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
 
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
@@ -2543,7 +2543,7 @@ describe('stats command', () => {
     fs.mkdirSync(realDir, { recursive: true });
     fs.writeFileSync(path.join(realDir, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(realDir, '01-01-SUMMARY.md'), '# Summary');
-    fs.writeFileSync(path.join(realDir, 'VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
+    fs.writeFileSync(path.join(realDir, '05-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
 
     const strayDir = path.join(tmpDir, '.planning', 'phases', '05-real-stray');
     fs.mkdirSync(strayDir, { recursive: true });
@@ -2889,6 +2889,76 @@ describe('phase status does not call a stale passing verification Complete', () 
       );
       assert.strictEqual(json.phases_completed, 0);
     }
+  });
+
+  // An uppercase `status: PASSED` is not the same value the canonical owner's
+  // routing table recognizes (`verification.cts`'s VERIFICATION_ROUTING_TABLE
+  // keys are exact lowercase) — it routes 'unknown', never 'passed'.
+  // `determinePhaseStatus` lower-cased the frontmatter value before comparing,
+  // so it alone treated an uppercase PASSED as a completion latch — a
+  // divergence from `isPhaseComplete` (what roadmap's canonical completion
+  // owner consults) that this phase must not have.
+  test('uppercase `status: PASSED` is not a completion latch — Executed, not Complete', () => {
+    seedVerifiedPhase('PASSED', 'fresh');
+
+    const json = JSON.parse(runGsdTools('stats', tmpDir).output);
+    assert.strictEqual(statsPhaseStatus(json), 'Executed', 'an uppercase PASSED must not read as verified-complete');
+    assert.strictEqual(json.phases_completed, 0);
+
+    const progressJson = JSON.parse(runGsdTools('progress', tmpDir).output);
+    const phase = progressJson.phases.find((p) => p.number === '01');
+    assert.strictEqual(phase.status, 'Executed', 'progress must agree with stats on the uppercase-PASSED case');
+  });
+
+  // `determinePhaseStatus` resolved its own verification file with
+  // `allowBare: true` (accepting a bare `VERIFICATION.md` with no phase-token
+  // prefix), but `findStaleVerificationSummary` — the staleness owner it then
+  // asks — resolves the phase's report WITHOUT allowBare. When the phase's
+  // only report is a bare `VERIFICATION.md`, the staleness owner cannot see it
+  // at all (`verificationFile` resolves to null there), so it always answers
+  // "nothing stale" for that file — even when the bare report is, in fact,
+  // older than the phase's own SUMMARY. That let a stale bare report inflate
+  // a phase to `Complete`. The canonical owner (`isPhaseComplete`) never
+  // allows bare in the first place, so a bare-only report should resolve the
+  // same way everywhere: not found, not complete.
+  test('a stale bare VERIFICATION.md (no phase-token prefix) does not inflate completion', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['---', 'milestone: v1.0', 'current_phase: "01"', 'status: executing', '---', '', '# State', ''].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap', '', '## v1.0 Demo', '', '### Phase 01: Auth', '', '**Plans**: 1 plan', '',
+        '## Progress', '',
+        '| Phase | Plans Complete | Status | Completed |',
+        '|-------|----------------|--------|-----------|',
+        '| 01    | 0/1            | Planned |           |', '',
+      ].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-auth');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan');
+    const summaryPath = path.join(phaseDir, '01-01-SUMMARY.md');
+    const verificationPath = path.join(phaseDir, 'VERIFICATION.md'); // bare, no `01-` prefix
+    fs.writeFileSync(summaryPath, '# Summary');
+    fs.writeFileSync(verificationPath, '---\nstatus: passed\n---\n# Verification\n');
+    const olderSec = 2_000_000_000;
+    const newerSec = olderSec + 3600;
+    fs.utimesSync(verificationPath, olderSec, olderSec); // report predates the summary — genuinely stale
+    fs.utimesSync(summaryPath, newerSec, newerSec);
+
+    const json = JSON.parse(runGsdTools('stats', tmpDir).output);
+    assert.notStrictEqual(statsPhaseStatus(json), 'Complete', 'a bare report the staleness owner cannot see must not grant completion');
+    assert.strictEqual(json.phases_completed, 0);
+
+    const roadmapResult = runGsdTools('roadmap update-plan-progress 01 --raw', tmpDir);
+    assert.ok(roadmapResult.success, `Command failed: ${roadmapResult.error}`);
+    const roadmapText = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    assert.ok(
+      roadmapText.includes('plans executed'),
+      `the canonical completion owner does not call this phase complete off a bare report; baseline changed:\n${roadmapText}`,
+    );
   });
 });
 

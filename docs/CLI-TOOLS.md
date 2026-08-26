@@ -297,7 +297,9 @@ together:
 
 A SUMMARY on disk means a plan was executed, not that it worked. A plan that was
 deliberately halted (`status: halted` in its SUMMARY frontmatter — see #2830)
-writes a SUMMARY too, so it counts as executed and never as complete.
+still writes a SUMMARY, so it counts in the plan-execution ratio. Phase completion
+is decided separately by the verification rules below; these renderers do not
+inspect SUMMARY frontmatter when deciding the phase status.
 
 Completion is decided per phase, from that phase's own verification report — the
 one the phase-scoped resolver single-picks (#3357/#3511), so an ad-hoc
